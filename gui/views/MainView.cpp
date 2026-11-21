@@ -42,7 +42,11 @@ MainView::MainView(QWidget* parent) : QMainWindow(parent) {
     // Interpreter row
     m_pythonEdit = new QLineEdit(central);
     m_pythonEdit->setObjectName(QStringLiteral("pythonEdit"));
+#ifdef Q_OS_WIN
     m_pythonEdit->setPlaceholderText(tr("Auto-detect from PATH (or choose python.exe)"));
+#else
+    m_pythonEdit->setPlaceholderText(tr("Auto-detect from PATH (or choose a python3 executable)"));
+#endif
     m_browsePython = new QPushButton(tr("Browse..."), central);
     m_browsePython->setObjectName(QStringLiteral("browsePythonButton"));
     auto* pythonRow = new QHBoxLayout;
@@ -167,9 +171,13 @@ void MainView::browseForScript() {
 }
 
 void MainView::browseForPython() {
+#ifdef Q_OS_WIN
+    const QString filter = tr("Executables (*.exe);;All files (*)");
+#else
+    const QString filter = tr("All files (*)");  // no extension marks an executable
+#endif
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Select a Python interpreter"), m_pythonEdit->text(),
-        tr("Executables (*.exe);;All files (*)"));
+        this, tr("Select a Python interpreter"), m_pythonEdit->text(), filter);
     if (!path.isEmpty()) {
         m_pythonEdit->setText(path);
     }

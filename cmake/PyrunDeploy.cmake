@@ -9,7 +9,23 @@
 #
 # Not the install()-time deploy script: that serves `cmake --install`; this
 # serves the build tree. Both are kept.
-if(NOT TARGET Qt6::windeployqt)
+#
+# Linux needs no build-tree step: CMake bakes a build RPATH to the Qt it
+# found, so the exes run from the build tree as they are.
+#
+# Linux install tree: bin/pyrun and bin/pyrun-gui, nothing bundled. Qt's
+# qt_generate_deploy_app_script was tried against a distro Qt 6.10: it copies
+# ~200 transitive libraries (GTK, glycin, ...) and plugins into lib/ and then
+# fails because patchelf is not installed. It is built for an official Qt
+# (qt.io / aqt) layout, not for distro packages, so it is not wired up. Instead
+# the installed exes carry an RPATH to the Qt they were linked against when that
+# Qt is outside the system library path (below); with a distro Qt the system
+# loader finds the libraries and the target needs the matching runtime
+# packages (see README).
+if(UNIX)
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
+if(WIN32 AND NOT TARGET Qt6::windeployqt)
   message(WARNING "Qt6::windeployqt not found; build-tree exes will need Qt on PATH")
 endif()
 
@@ -29,17 +45,24 @@ function(pyrun_deploy_qt target)
     VERBATIM)
 
   if(PYRUN_ASAN AND MSVC)
+    # The runtime DLLs sit next to cl.exe in both the VS 2022 and VS 2026
+    # toolsets (same file names, x64); the directory comes from whichever cl
+    # this build configured with, so the copy follows the toolset in use.
     get_filename_component(_cl_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    set(_asan_dll "${_cl_dir}/clang_rt.asan_dynamic-x86_64.dll")
-    set(_asan_dbg "${_cl_dir}/clang_rt.asan_dbg_dynamic-x86_64.dll")
-    if(EXISTS "${_asan_dll}")
+    set(_asan_dlls "")
+    foreach(_name clang_rt.asan_dynamic-x86_64.dll clang_rt.asan_dbg_dynamic-x86_64.dll)
+      if(EXISTS "${_cl_dir}/${_name}")
+        list(APPEND _asan_dlls "${_cl_dir}/${_name}")
+      else()
+        message(WARNING "ASan runtime ${_name} not found next to cl.exe (${_cl_dir})")
+      endif()
+    endforeach()
+    if(_asan_dlls)
       add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_asan_dll}" "${_asan_dbg}" "$<TARGET_FILE_DIR:${target}>"
+                ${_asan_dlls} "$<TARGET_FILE_DIR:${target}>"
         COMMENT "copy ASan runtime for ${target}"
         VERBATIM)
-    else()
-      message(WARNING "ASan runtime DLL not found next to cl.exe (${_cl_dir})")
     endif()
   endif()
 endfunction()

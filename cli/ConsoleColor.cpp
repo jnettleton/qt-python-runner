@@ -57,8 +57,8 @@ bool enableFor(DWORD stdHandleId, bool allowed, unsigned long& originalMode, boo
 }  // namespace
 
 ConsoleColorGuard::ConsoleColorGuard(bool noColorFlag) {
-    const bool allowed = !noColorFlag && !noColorEnvironmentSet();
 #ifdef Q_OS_WIN
+    const bool allowed = !noColorFlag && !noColorEnvironmentSet();
     m_stdoutColor = enableFor(STD_OUTPUT_HANDLE, allowed, m_stdoutOriginalMode, m_stdoutRestore);
     m_stderrColor = enableFor(STD_ERROR_HANDLE, allowed, m_stderrOriginalMode, m_stderrRestore);
 #else

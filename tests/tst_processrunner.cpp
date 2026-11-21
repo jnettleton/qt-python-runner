@@ -15,6 +15,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <csignal>
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 using namespace pyrun;
@@ -44,6 +48,21 @@ bool isAlive(qint64 pid) {
     const bool alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
     CloseHandle(h);
     return alive;
+}
+#else
+// True while the pid exists and is not a zombie (a killed orphan stays a
+// zombie until init reaps it; that counts as dead).
+bool isAlive(qint64 pid) {
+    if (::kill(static_cast<pid_t>(pid), 0) != 0) {
+        return false;
+    }
+    QFile stat(QStringLiteral("/proc/%1/stat").arg(pid));
+    if (!stat.open(QIODevice::ReadOnly)) {
+        return true;  // no /proc (not Linux): kill(pid, 0) succeeded
+    }
+    const QByteArray line = stat.readAll();
+    const qsizetype closeParen = line.lastIndexOf(')');
+    return !(closeParen >= 0 && line.size() > closeParen + 2 && line.at(closeParen + 2) == 'Z');
 }
 #endif
 
@@ -94,15 +113,13 @@ class ProcessRunnerTest : public QObject {
         return PythonLocator::isStoreAlias(m_python);
     }
 
-    void verifyGrandchildDies([[maybe_unused]] const QString& text) {
-#ifdef Q_OS_WIN
+    void verifyGrandchildDies(const QString& text) {
         const QRegularExpressionMatch m =
             QRegularExpression(QStringLiteral("grandchild (\\d+)")).match(text);
         QVERIFY2(m.hasMatch(), qPrintable(text));
         const qint64 pid = m.captured(1).toLongLong();
         // The kill is synchronous, but give the OS a moment to tear down.
         QTRY_VERIFY2_WITH_TIMEOUT(!isAlive(pid), "grandchild survived the kill", 5000);
-#endif
     }
 
 private slots:
@@ -208,30 +225,37 @@ private slots:
         QVERIFY(!r.result.succeeded());
     }
 
-    // Stop and timeout must kill the whole tree, not just the interpreter.
+    // Stop and timeout must kill the whole tree, not just the interpreter
+    // (Windows: Job Object; POSIX: process group, SIGTERM then SIGKILL).
     void stopKillsGrandchildren() {
-#ifdef Q_OS_WIN
         if (interpreterIsAlias()) {
             QSKIP("Interpreter is a WindowsApps launcher alias; set PYRUN_TEST_PYTHON.");
         }
         const Run r = runScript(fixture("spawn_child.py"), 0ms, 2000ms);
         QCOMPARE(r.result.outcome, RunOutcome::Stopped);
         verifyGrandchildDies(r.text);
-#else
-        QSKIP("Job Object tree-kill is Windows-only.");
-#endif
     }
 
     void timeoutKillsGrandchildren() {
-#ifdef Q_OS_WIN
         if (interpreterIsAlias()) {
             QSKIP("Interpreter is a WindowsApps launcher alias; set PYRUN_TEST_PYTHON.");
         }
         const Run r = runScript(fixture("spawn_child.py"), 2000ms);
         QCOMPARE(r.result.outcome, RunOutcome::TimedOut);
         verifyGrandchildDies(r.text);
+    }
+
+    // POSIX: a tree that ignores SIGTERM is SIGKILLed after the grace period,
+    // grandchild included.
+    void sigtermIgnoredEscalatesToSigkill() {
+#ifdef Q_OS_WIN
+        QSKIP("POSIX signals only; the Job Object kill has no graceful stage.");
 #else
-        QSKIP("Job Object tree-kill is Windows-only.");
+        const Run r = runScript(fixture("ignore_sigterm.py"), 0ms, 1500ms);
+        QCOMPARE(r.result.outcome, RunOutcome::Stopped);
+        QVERIFY2(r.result.elapsed >= 1500ms + ProcessRunner::kKillGrace - 200ms,
+                 "the group must have been given the grace period before SIGKILL");
+        verifyGrandchildDies(r.text);
 #endif
     }
 

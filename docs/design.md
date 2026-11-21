@@ -16,7 +16,7 @@ One class per header/source pair, files named after the class.
 
     core/                      runner_core (Qt6::Core only)
       models/                  RunResult, OutputChannel, StatusSeverity, FileList (value types, no behaviour tied to a UI)
-      services/                IProcessRunner, ProcessRunner, PythonLocator, OutputDecoder
+      services/                IProcessRunner, ProcessRunner, ProcessTree (platform tree-kill), PythonLocator, OutputDecoder
       presenters/              RunPresenter (depends on view interfaces only)
       views/                   IRunView (the view interface; no widget types)
     gui/                       pyrun-gui + gui_view (Qt6::Widgets)
@@ -24,7 +24,7 @@ One class per header/source pair, files named after the class.
     cli/                       pyrun (Qt6::Core only)
       views/                   ConsoleView (implements IRunView on stdout/stderr)
       ConsoleColor.*           colour policy + VT console-mode RAII (not a view)
-      ConsoleEncodingGuard.*   console code page RAII (not a view)
+      ConsoleEncodingGuard.*   Windows console code page / binary mode RAII (no-op on POSIX; not a view)
     tests/
 
 Includes are rooted at each target's directory (`"presenters/RunPresenter.h"`,
@@ -58,17 +58,38 @@ Widgets cannot leak into core.
 | `RunPresenter` | `main()` stack; holds non-owning refs to view/runner/locator | n/a | `batchFinished` |
 | GUI child widgets | `MainView` via Qt parent tree | n/a | n/a |
 | `AboutView` | stack, modal, parent `MainView` | n/a | n/a |
-| per-run `ProcessJob` (Win32 Job Object, KILL_ON_JOB_CLOSE) | `ProcessRunner` (`unique_ptr`) | `stop()`/timeout via `TerminateJobObject`; closing the handle on run completion or runner death | n/a |
-| grandchildren spawned by a script | the job | same as above | not reported individually |
+| per-run `ProcessTree` (Windows: Job Object, KILL_ON_JOB_CLOSE; POSIX: process group) | `ProcessRunner` (`unique_ptr`) | `stop()`/timeout: Windows `TerminateJobObject`; POSIX `killpg(SIGTERM)`, then `killpg(SIGKILL)` after the grace timer. On run completion or runner death: handle close / `killpg(SIGKILL)` | n/a |
+| kill-grace `QTimer` (POSIX escalation) | `ProcessRunner` (member, parent `this`) | stopped in `complete()` | n/a |
+| grandchildren spawned by a script | the job / the process group | same as above | not reported individually |
 | GUI interpreter setting | `QSettings` (INI) on `main()`'s stack | n/a | n/a |
 
-Tree kill: each run gets a Job Object (`#ifdef Q_OS_WIN` inside `ProcessRunner.cpp`;
-no-op elsewhere). The interpreter is assigned on `QProcess::started`. Stop and timeout call
-`TerminateJobObject` then `kill()`. The job is closed when the run completes, so leftover
-descendants die with it: a script cannot daemonise a child past its run (this also covers
-`py.exe`, which launches `python.exe` as a child). Known race: a descendant spawned
-between process creation and job assignment escapes; interpreter start-up makes this
-practically unreachable. If assignment fails, behaviour falls back to killing the direct child.
+Tree kill sits behind `ProcessTree` (`core/services/ProcessTree.h/.cpp`), the one place with
+platform `#ifdef`s for it; `ProcessRunner` and the presenter are platform-neutral. Interface:
+`prepare(QProcess&)` before start, `adopt(pid)` once running, `requestStop()` (returns whether
+a hard kill must follow), `kill()`, and the destructor (kills stragglers).
+
+- **Windows.** Each run gets a Job Object. The interpreter is assigned on `QProcess::started`.
+  Stop and timeout call `TerminateJobObject` (no graceful form) then `kill()`. The job is
+  closed when the run completes, so leftover descendants die with it: a script cannot
+  daemonise a child past its run (this also covers `py.exe`, which launches `python.exe`
+  as a child). Known race: a descendant spawned between process creation and job
+  assignment escapes; interpreter start-up makes this practically unreachable. If
+  assignment fails, behaviour falls back to killing the direct child.
+- **POSIX (Linux).** `prepare()` installs a `QProcess::setChildProcessModifier` that runs in
+  the forked child before exec: `setpgid(0, 0)` (the child leads a new process group, so
+  pgid == its pid and there is no assignment race) and, on Linux, `prctl(PR_SET_PDEATHSIG,
+  SIGKILL)`. Stop and timeout send `SIGTERM` to the group and start a 2 s grace timer
+  (`ProcessRunner::kKillGrace`); if the run has not completed when it fires, the group gets
+  `SIGKILL` and the direct child `kill()`. Completing a run `SIGKILL`s whatever is left in
+  the group. Why a group rather than `setsid`: same reach for our purposes, but the child
+  keeps the session and controlling terminal. Why SIGTERM first: a script can clean up (the
+  default Python disposition just dies; a handler can flush and exit).
+  Costs and limits: a descendant that calls `setsid()`/`setpgid()` itself leaves the group
+  and escapes; if pyrun itself is SIGKILLed or crashes, only the interpreter dies (via
+  PDEATHSIG), not its group; the pgid can only be reused once the group is gone and reaped,
+  so the final `killpg` has a theoretical pid-reuse window that needs a full pid wrap.
+  What would change the decision: catching deliberate daemonisers needs cgroups or a
+  subreaper, a much heavier design.
 
 ## Channels and encoding
 
@@ -135,15 +156,21 @@ practically unreachable. If assignment fails, behaviour falls back to killing th
     on the console, while `2> err.txt` makes them plain.
   - No green for `[ok]`: not conventional for tools that print status, and an
     extra colour to keep legible on both themes for no information gain.
-- CLI output: stdout/stderr put in binary mode, console code page switched to
-  UTF-8 for the run and restored on exit; we write UTF-8 bytes, so a console and a
-  redirect to a file produce the same bytes.
+- CLI output: on Windows stdout/stderr are put in binary mode and the console code page
+  switched to UTF-8 for the run and restored on exit (`ConsoleEncodingGuard`); on POSIX
+  there is nothing to do (no newline translation; terminals take UTF-8 bytes). We write
+  UTF-8 bytes, so a console and a redirect to a file produce the same bytes.
+- CLI colour on POSIX: `isatty()` per stream, `TERM` not `dumb`, no `NO_COLOR`, no
+  `--no-color`; no console-mode switching or restoring is involved.
 
 ## Interpreter resolution
 
 Absolute path always. Auto-detect scans PATH directories one at a time with
-`QStandardPaths::findExecutable` for `python.exe`, `python3.exe`, `py.exe`.
-`.bat`/`.cmd` are never chosen (cmd.exe argument parsing); when only a batch shim is found, the error names it and tells pyenv-win users to use `pyenv which python`. A hit under
+`QStandardPaths::findExecutable` for `python.exe`, `python3.exe`, `py.exe` (Windows) or
+`python3`, `python` (POSIX; the execute bit is required). The `.bat`/`.cmd` rule and the
+`WindowsApps` fallback below are Windows-only (`kBatchRule` in `PythonLocator.cpp`): a POSIX
+shim is a plain executable launched with an argv list, so there is no cmd.exe-style
+re-parsing to guard against. On Windows `.bat`/`.cmd` are never chosen (cmd.exe argument parsing); when only a batch shim is found, the error names it and tells pyenv-win users to use `pyenv which python`. A hit under
 `WindowsApps` is used only as a last resort; if the run then exits at once
 with no output, the presenter says it is probably the Microsoft Store stub and
 what to do. Override: `--python` / the GUI Interpreter field.
@@ -153,7 +180,8 @@ what to do. Override: `--python` / the GUI Interpreter field.
 None by default. GUI: Stop button (and closing the window) kills the script.
 CLI: `--timeout <seconds>` applies per script; at expiry the child is killed
 and reported `[timeout]`; the batch then continues (or stops with `--fail-fast`).
-`kill()` rather than `terminate()` because a console Python ignores WM_CLOSE.
+`kill()` rather than `terminate()` on Windows because a console Python ignores WM_CLOSE;
+on POSIX the stop is SIGTERM, escalating to SIGKILL after 2 s (see Tree kill).
 
 ## Exit-code policy (CLI)
 
@@ -167,8 +195,31 @@ None. QProcess is asynchronous; the CLI is event driven (the next script is
 chained off `finished`, `batchFinished` quits the loop with the exit code).
 No `waitFor*` on any GUI path (tests call them only on a test thread).
 
+## Toolchains and platforms
+
+- **MSVC.** Qt's kit is `msvc2022_64`; VS 2022 is the default toolset and VS 2026 (v145) is
+  supported through MSVC's v140-v145 binary compatibility. The exception, whole-program
+  optimisation (`/GL`, `/LTCG`), is refused at configure time (`cmake/PyrunToolchain.cmake`).
+  `build.cmd` picks the VS generation (`VSVERSION`) and gives 2026 its own build tree via
+  `PYRUN_BUILD_TAG` (`binaryDir` in `CMakePresets.json` reads `$env{PYRUN_BUILD_TAG}`).
+  A parallel set of `msvc2026-*` presets was rejected: three more of everything for a
+  property that is really "which `cl` is on PATH".
+- **Linux.** GCC (Ubuntu 15.2) with Ninja; Clang is not tested. `linux-asan` is
+  `-fsanitize=address,undefined -fno-sanitize-recover=all`; MSVC has no UBSan, so the Linux
+  asan preset is the stronger one. Platform-specific code is confined to `ProcessTree.cpp`,
+  the locator's platform constants, the `ConsoleColor`/`ConsoleEncodingGuard` guards (already
+  `#ifdef`'d), and two strings in `MainView`. Windows-only CMake: `enable_language(RC)`,
+  VERSIONINFO, `windeployqt`, the Qt deploy script, `PATH` prepending in tests.
+- **Install on Linux** is `bin/` plus an RPATH; no bundling (see README, Deploy).
+- **Line endings.** `.gitattributes` pins `*.sh` and `*.py` to LF (a CRLF shebang breaks) and
+  `*.cmd` to CRLF.
+
 ## Not done / deliberate omissions
 
+- Linux: no self-contained bundle (AppImage/linuxdeploy), no Clang or macOS verification.
+- Linux: if pyrun is interrupted by Ctrl-C or SIGTERM it does not stop the running child
+  group (only PDEATHSIG kills the interpreter). A signal handler that routes to `stop()` is
+  the fix; not done.
 - Remembering the last script (only the interpreter is remembered, by decision).
 - No icon (by decision). VERSIONINFO is generated from project VERSION for both exes.
 - No stdin forwarding to the script.

@@ -14,6 +14,19 @@ QStringList pathDirectories() {
     return qEnvironmentVariable("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
 }
 
+// The .bat/.cmd rule exists because launching a batch file routes arguments
+// through cmd.exe parsing. POSIX has no equivalent: a pyenv/asdf shim there is an
+// ordinary executable script started with an argv list, so it is allowed.
+#ifdef Q_OS_WIN
+constexpr bool kBatchRule = true;
+#else
+constexpr bool kBatchRule = false;
+#endif
+
+bool isRejectedShim(const QString& path) {
+    return kBatchRule && PythonLocator::isBatchFile(path);
+}
+
 QStringList candidateNames() {
 #ifdef Q_OS_WIN
     return {QStringLiteral("python.exe"), QStringLiteral("python3.exe"),
@@ -23,13 +36,16 @@ QStringList candidateNames() {
 #endif
 }
 
+#ifdef Q_OS_WIN
 const char* const kPyenvHint =
     "pyenv-win users: python on PATH is a .bat shim, which is deliberately not run "
     "(cmd.exe argument parsing). Find the real interpreter with 'pyenv which python' "
     "and pass that python.exe (--python <path> on the command line, the Interpreter "
     "field in the GUI).";
+#endif
 
-QString notFoundHelp(const QString& skippedBatchShim) {
+QString notFoundHelp([[maybe_unused]] const QString& skippedBatchShim) {
+#ifdef Q_OS_WIN
     QString text = QStringLiteral(
         "No Python interpreter found on PATH (looked for python.exe, python3.exe, py.exe).\n"
         "Install Python from python.org, or point this tool at one explicitly "
@@ -41,6 +57,13 @@ QString notFoundHelp(const QString& skippedBatchShim) {
                          QString::fromLatin1(kPyenvHint));
     }
     return text;
+#else
+    return QStringLiteral(
+        "No Python interpreter found on PATH (looked for python3, python).\n"
+        "Install Python 3 with your package manager (the package is usually called python3), "
+        "or point this tool at one explicitly (--python <path> on the command line, "
+        "the Interpreter field in the GUI).");
+#endif
 }
 
 }  // namespace
@@ -50,7 +73,8 @@ PythonLocator::PythonLocator() : m_dirs(pathDirectories()) {}
 PythonLocator::PythonLocator(QStringList searchDirs) : m_dirs(std::move(searchDirs)) {}
 
 bool PythonLocator::isStoreAlias(const QString& path) {
-    const QString p = QDir::fromNativeSeparators(path);
+    QString p = path;
+    p.replace(QLatin1Char('\\'), QLatin1Char('/'));  // not fromNativeSeparators: pure on every OS
     return p.contains(QStringLiteral("/WindowsApps/"), Qt::CaseInsensitive);
 }
 
@@ -79,7 +103,7 @@ InterpreterLookup PythonLocator::resolveOverride(const QString& rawValue) const 
         // A bare name such as "python3.12": search our directories only.
         for (const QString& dir : std::as_const(m_dirs)) {
             resolved = QStandardPaths::findExecutable(value, {dir});
-            if (!resolved.isEmpty() && !isBatchFile(resolved)) {
+            if (!resolved.isEmpty() && !isRejectedShim(resolved)) {
                 break;
             }
             resolved.clear();
@@ -90,7 +114,7 @@ InterpreterLookup PythonLocator::resolveOverride(const QString& rawValue) const 
     if (resolved.isEmpty()) {
         lookup.error = QStringLiteral("Python interpreter '%1' was not found.")
                            .arg(QDir::toNativeSeparators(value));
-    } else if (isBatchFile(resolved)) {
+    } else if (isRejectedShim(resolved)) {
         lookup.error = QStringLiteral(
                            "'%1' is a batch file. Batch files are not run directly (cmd.exe "
                            "argument parsing). Point at the real python.exe instead "
@@ -104,11 +128,10 @@ InterpreterLookup PythonLocator::resolveOverride(const QString& rawValue) const 
 
 InterpreterLookup PythonLocator::autoDetect() const {
     QString storeFallback;
-    QString skippedBatch;
     for (const QString& name : candidateNames()) {
         for (const QString& dir : std::as_const(m_dirs)) {
             const QString found = QStandardPaths::findExecutable(name, {dir});
-            if (found.isEmpty() || isBatchFile(found)) {
+            if (found.isEmpty() || isRejectedShim(found)) {
                 continue;
             }
             const QString absolute = QFileInfo(found).absoluteFilePath();
@@ -124,6 +147,10 @@ InterpreterLookup PythonLocator::autoDetect() const {
         return {storeFallback, {}};
     }
     // Report a batch shim only if it explains the failure (nothing else found).
+    QString skippedBatch;
+    if (!kBatchRule) {
+        return {{}, notFoundHelp({})};
+    }
     for (const QString& dir : std::as_const(m_dirs)) {
         for (const char* shim : {"python.bat", "python.cmd", "python3.bat", "py.bat"}) {
             const QString found = QStandardPaths::findExecutable(QString::fromLatin1(shim), {dir});

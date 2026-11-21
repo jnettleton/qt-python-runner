@@ -8,11 +8,12 @@
 #include <QProcess>
 #include <QTimer>
 
+#include <chrono>
 #include <memory>
 
 namespace pyrun {
 
-class ProcessJob;  // Windows Job Object wrapper, defined in ProcessRunner.cpp
+class ProcessTree;  // platform tree-kill (Job Object / process group), see ProcessTree.h
 
 // Real IProcessRunner over QProcess.
 //
@@ -20,15 +21,16 @@ class ProcessJob;  // Windows Job Object wrapper, defined in ProcessRunner.cpp
 //  - ProcessRunner is owned by whoever constructs it (main()'s scope / a parent).
 //  - The QProcess is created per run with `this` as parent, detached from our
 //    slots and deleteLater()'d when the run completes. It never outlives us.
-//  - The timeout QTimer is a member (parent: this).
-//  - The per-run ProcessJob (Windows Job Object, KILL_ON_JOB_CLOSE) is owned by
-//    this runner (unique_ptr) and holds the interpreter plus everything it
-//    spawns. It is destroyed when the run completes, which also kills any
-//    leftover descendants: a script's children do not outlive its run.
-//  - Who kills a hung child: the timeout timer or stop(), via the job (whole
-//    tree) then kill() (a console Python ignores terminate()'s WM_CLOSE). The
-//    destructor does the same as a last resort. On non-Windows the job is a
-//    no-op and only the direct child is killed.
+//  - The timeout QTimer and the kill-grace QTimer are members (parent: this).
+//  - The per-run ProcessTree (Job Object on Windows, process group on POSIX) is
+//    owned by this runner (unique_ptr) and covers the interpreter plus
+//    everything it spawns. It is destroyed when the run completes, which also
+//    kills any leftover descendants: a script's children do not outlive its run.
+//  - Who kills a hung child: the timeout timer or stop(), through the tree.
+//    Windows: TerminateJobObject at once, then kill() (a console Python ignores
+//    terminate()'s WM_CLOSE). POSIX: SIGTERM to the group, SIGKILL to the group
+//    after kKillGrace if the run has not completed. The destructor kills the
+//    tree as a last resort.
 //  - Who hears about death: finished(RunResult), exactly once per start().
 //
 // Child setup: absolute interpreter, `-u script`, PYTHONUTF8=1,
@@ -37,6 +39,9 @@ class ProcessJob;  // Windows Job Object wrapper, defined in ProcessRunner.cpp
 class ProcessRunner final : public IProcessRunner {
     Q_OBJECT
 public:
+    // How long a POSIX process group gets between SIGTERM and SIGKILL.
+    static constexpr std::chrono::milliseconds kKillGrace{2000};
+
     explicit ProcessRunner(QObject* parent = nullptr);
     ~ProcessRunner() override;
 
@@ -51,6 +56,7 @@ private:
     void onFinished(int exitCode, QProcess::ExitStatus status);
     void onErrorOccurred(QProcess::ProcessError error);
     void onTimeout();
+    void onKillGrace();
     void onStarted();
     void killTree();
     void complete(RunResult result);
@@ -61,7 +67,8 @@ private:
     OutputDecoder m_errDecoder;  // sequence split on one pipe must not touch the other
     QElapsedTimer m_clock;
     QTimer m_timeout;
-    std::unique_ptr<ProcessJob> m_job;
+    QTimer m_killGrace;  // POSIX: SIGTERM -> SIGKILL escalation
+    std::unique_ptr<ProcessTree> m_job;
     bool m_producedOutput = false;
     bool m_drainScheduled = false;
     bool m_stopRequested = false;

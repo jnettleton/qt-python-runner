@@ -1,7 +1,7 @@
 set(PYRUN_FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 
-# One Qt Test executable per file, registered with CTest. Qt's DLLs are put on
-# PATH for the test process only (nothing is installed or edited system-wide).
+# One Qt Test executable per file, registered with CTest. Environment per test
+# comes from pyrun_set_test_environment (cmake/PyrunTesting.cmake).
 function(pyrun_add_test name)
   qt_add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE runner_core Qt6::Test)
@@ -11,9 +11,7 @@ function(pyrun_add_test name)
   set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
   pyrun_set_warnings(${name})
   add_test(NAME ${name} COMMAND ${name})
-  set_tests_properties(${name} PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  pyrun_set_test_environment(${name})
 endfunction()
 
 pyrun_add_test(tst_smoke tst_smoke.cpp)

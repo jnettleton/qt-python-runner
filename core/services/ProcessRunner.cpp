@@ -1,91 +1,22 @@
 #include "services/ProcessRunner.h"
 
+#include "services/ProcessTree.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
 
 #include <utility>
 
-#ifdef Q_OS_WIN
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 namespace pyrun {
 
-// Owns one Windows Job Object configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-// Processes assigned to it (and their descendants) die when terminate() is
-// called or the last handle closes (destructor, or this process dying).
-// Elsewhere it compiles to no-ops. Known race: a child is assigned after it
-// has started, so a descendant spawned in those first microseconds escapes;
-// the interpreter's start-up time makes that practically unreachable.
-class ProcessJob {
-public:
-    ProcessJob() {
-#ifdef Q_OS_WIN
-        HANDLE job = CreateJobObjectW(nullptr, nullptr);
-        if (job == nullptr) {
-            return;
-        }
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
-                                     sizeof(info))) {
-            CloseHandle(job);
-            return;
-        }
-        m_handle = job;
-#endif
-    }
-    ~ProcessJob() {
-#ifdef Q_OS_WIN
-        if (m_handle != nullptr) {
-            CloseHandle(static_cast<HANDLE>(m_handle));  // KILL_ON_JOB_CLOSE reaps the tree
-        }
-#endif
-    }
-    ProcessJob(const ProcessJob&) = delete;
-    ProcessJob& operator=(const ProcessJob&) = delete;
-
-    // Best effort: failure leaves plain kill() of the direct child as fallback.
-    bool assign([[maybe_unused]] qint64 pid) {
-#ifdef Q_OS_WIN
-        if (m_handle == nullptr) {
-            return false;
-        }
-        HANDLE process =
-            OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
-        if (process == nullptr) {
-            return false;
-        }
-        const BOOL ok = AssignProcessToJobObject(static_cast<HANDLE>(m_handle), process);
-        CloseHandle(process);
-        return ok != FALSE;
-#else
-        return false;
-#endif
-    }
-
-    void terminate() {
-#ifdef Q_OS_WIN
-        if (m_handle != nullptr) {
-            TerminateJobObject(static_cast<HANDLE>(m_handle), 1);
-        }
-#endif
-    }
-
-private:
-    [[maybe_unused]] void* m_handle = nullptr;
-};
-
-ProcessRunner::ProcessRunner(QObject* parent) : IProcessRunner(parent), m_timeout(this) {
+ProcessRunner::ProcessRunner(QObject* parent)
+    : IProcessRunner(parent), m_timeout(this), m_killGrace(this) {
     m_timeout.setSingleShot(true);
     connect(&m_timeout, &QTimer::timeout, this, &ProcessRunner::onTimeout);
+    m_killGrace.setSingleShot(true);
+    m_killGrace.setInterval(kKillGrace);
+    connect(&m_killGrace, &QTimer::timeout, this, &ProcessRunner::onKillGrace);
 }
 
 ProcessRunner::~ProcessRunner() {
@@ -113,11 +44,12 @@ void ProcessRunner::start(const RunRequest& request) {
     m_producedOutput = false;
     m_stopRequested = false;
     m_timedOut = false;
-    m_job = std::make_unique<ProcessJob>();
+    m_job = std::make_unique<ProcessTree>();
 
     auto* process = new QProcess(this);
     m_process = process;
     process->setProcessChannelMode(QProcess::SeparateChannels);
+    ProcessTree::prepare(*process);
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
@@ -164,19 +96,42 @@ void ProcessRunner::onTimeout() {
 }
 
 void ProcessRunner::onStarted() {
-    if (m_process != nullptr && m_job != nullptr) {
-        (void)m_job->assign(m_process->processId());
+    if (m_process != nullptr && m_job != nullptr && !m_job->adopted()) {
+        (void)m_job->adopt(m_process->processId());
     }
 }
 
+// Stops the interpreter and everything it spawned. With a graceful platform
+// form (POSIX SIGTERM to the group) the hard kill follows after kKillGrace
+// unless the run completes first; otherwise it is immediate.
 void ProcessRunner::killTree() {
     if (m_process == nullptr) {
         return;
     }
+    bool graceful = false;
     if (m_job != nullptr) {
-        m_job->terminate();  // interpreter + every descendant
+        if (!m_job->adopted()) {
+            (void)m_job->adopt(m_process->processId());
+        }
+        graceful = m_job->requestStop();
     }
-    m_process->kill();       // fallback if the job could not be used
+    if (graceful) {
+        if (!m_killGrace.isActive()) {
+            m_killGrace.start();
+        }
+    } else {
+        m_process->kill();  // tree unavailable (fallback), or already hard-killed (Windows)
+    }
+}
+
+void ProcessRunner::onKillGrace() {
+    if (m_process == nullptr) {
+        return;
+    }
+    if (m_job != nullptr) {
+        m_job->kill();
+    }
+    m_process->kill();
 }
 
 // Reads whatever is buffered on one channel, decodes it with that channel's
@@ -275,11 +230,12 @@ void ProcessRunner::complete(RunResult result) {
     result.producedOutput = m_producedOutput;
 
     m_timeout.stop();
+    m_killGrace.stop();
     QProcess* process = m_process;
     m_process = nullptr;  // idle before emitting, so a slot may start() the next run
     process->disconnect(this);
     process->deleteLater();
-    m_job.reset();  // closes the job: any leftover descendants are killed
+    m_job.reset();  // kills any leftover descendants (job closed / group SIGKILLed)
 
     emit finished(result);
 }

@@ -17,6 +17,8 @@ qt_add_library(runner_core STATIC
   services/PythonLocator.cpp
   services/ProcessRunner.h
   services/ProcessRunner.cpp
+  services/ProcessTree.h
+  services/ProcessTree.cpp
   presenters/RunPresenter.h
   presenters/RunPresenter.cpp
 )

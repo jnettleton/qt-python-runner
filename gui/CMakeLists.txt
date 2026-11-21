@@ -19,8 +19,10 @@ pyrun_add_version_info(pyrun-gui "Python Runner - run a Python script and watch 
 set_target_properties(pyrun-gui PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 pyrun_deploy_qt(pyrun-gui)
 
-install(TARGETS pyrun-gui RUNTIME DESTINATION .)
-qt_generate_deploy_app_script(TARGET pyrun-gui
-  OUTPUT_SCRIPT pyrun_gui_deploy_script
-  NO_UNSUPPORTED_PLATFORM_ERROR)
-install(SCRIPT ${pyrun_gui_deploy_script})
+install(TARGETS pyrun-gui RUNTIME DESTINATION ${PYRUN_INSTALL_BINDIR})
+if(WIN32)  # windeployqt; see PyrunDeploy.cmake for why Linux has no deploy script
+  qt_generate_deploy_app_script(TARGET pyrun-gui
+    OUTPUT_SCRIPT pyrun_gui_deploy_script
+    NO_UNSUPPORTED_PLATFORM_ERROR)
+  install(SCRIPT ${pyrun_gui_deploy_script})
+endif()

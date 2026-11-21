@@ -1,6 +1,6 @@
 # Per-target warning policy. Applied to our targets only, never globally.
 option(PYRUN_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
-option(PYRUN_ASAN "Build with AddressSanitizer (MSVC /fsanitize=address)" OFF)
+option(PYRUN_ASAN "Build with sanitizers (MSVC: /fsanitize=address; GCC/Clang: address + undefined)" OFF)
 
 function(pyrun_set_warnings target)
   if(MSVC)
@@ -19,6 +19,12 @@ function(pyrun_set_warnings target)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     if(PYRUN_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE -Werror)
+    endif()
+    if(PYRUN_ASAN)
+      # UBSan is available here (not on MSVC). A finding aborts the test.
+      target_compile_options(${target} PRIVATE
+        -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+      target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
   endif()
 endfunction()

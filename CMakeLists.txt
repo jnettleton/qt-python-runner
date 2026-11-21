@@ -25,7 +25,18 @@ include(PyrunVersionInfo)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Test)
 qt_standard_project_setup()
+include(PyrunToolchain)
 include(PyrunDeploy)
+
+include(PyrunTesting)
+
+# Install layout: Windows keeps the exe, Qt DLLs and plugins in one flat folder
+# (xcopy-able); elsewhere the usual bin/ and lib/ under the prefix.
+if(WIN32)
+  set(PYRUN_INSTALL_BINDIR ".")
+else()
+  set(PYRUN_INSTALL_BINDIR "bin")
+endif()
 
 enable_testing()
 

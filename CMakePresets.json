@@ -1,47 +1,164 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "architecture": { "value": "x64", "strategy": "external" },
+      "binaryDir": "${sourceDir}/build/${presetName}$env{PYRUN_BUILD_TAG}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "cl",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.12.1/msvc2022_64",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       },
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     },
     {
       "name": "msvc-debug",
       "inherits": "base",
-      "displayName": "MSVC 2022 x64 Debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "displayName": "MSVC x64 Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "msvc-release",
       "inherits": "base",
-      "displayName": "MSVC 2022 x64 Release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "displayName": "MSVC x64 Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "msvc-asan",
       "inherits": "base",
-      "displayName": "MSVC 2022 x64 AddressSanitizer (RelWithDebInfo, no /RTC)",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "PYRUN_ASAN": "ON" }
+      "displayName": "MSVC x64 AddressSanitizer (RelWithDebInfo, no /RTC)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PYRUN_ASAN": "ON"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "linux-base",
+      "displayName": "Linux Debug (system C++ compiler)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-release",
+      "inherits": "linux-base",
+      "displayName": "Linux Release (system C++ compiler)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "inherits": "linux-base",
+      "displayName": "Linux Debug + AddressSanitizer + UBSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PYRUN_ASAN": "ON"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "msvc-debug", "configurePreset": "msvc-debug" },
-    { "name": "msvc-release", "configurePreset": "msvc-release" },
-    { "name": "msvc-asan", "configurePreset": "msvc-asan" }
+    {
+      "name": "msvc-debug",
+      "configurePreset": "msvc-debug"
+    },
+    {
+      "name": "msvc-release",
+      "configurePreset": "msvc-release"
+    },
+    {
+      "name": "msvc-asan",
+      "configurePreset": "msvc-asan"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan"
+    }
   ],
   "testPresets": [
-    { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
-    { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
-    { "name": "msvc-asan", "configurePreset": "msvc-asan", "output": { "outputOnFailure": true } }
+    {
+      "name": "msvc-debug",
+      "configurePreset": "msvc-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msvc-release",
+      "configurePreset": "msvc-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msvc-asan",
+      "configurePreset": "msvc-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

@@ -40,6 +40,7 @@ private slots:
         QVERIFY(r.error.contains("was not found"));
     }
 
+#ifdef Q_OS_WIN
     void overrideRejectsBatchFiles() {
         QTemporaryDir dir;
         const QString bat = touch(dir.filePath("python.bat"));
@@ -47,6 +48,37 @@ private slots:
         QVERIFY(!r.ok());
         QVERIFY(r.error.contains("batch file"));
     }
+#else
+    // No cmd.exe parsing off Windows: an executable shim script is fine, and a
+    // .bat suffix means nothing.
+    void overrideAcceptsAnExecutableShimScript() {
+        QTemporaryDir dir;
+        const QString shim = touch(dir.filePath("shims/python"));
+        const InterpreterLookup r = PythonLocator(QStringList{}).locate(shim);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QCOMPARE(r.path, QFileInfo(shim).absoluteFilePath());
+    }
+
+    void autoDetectPrefersPython3ThenPythonAndSkipsNonExecutables() {
+        QTemporaryDir dir;
+        const QString first = dir.filePath("first");
+        const QString second = dir.filePath("second");
+        // A file without the execute bit is not an interpreter.
+        QDir().mkpath(first);
+        QFile plain(first + "/python3");
+        QVERIFY(plain.open(QIODevice::WriteOnly));
+        plain.write("stub");
+        plain.close();
+        plain.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        touch(first + "/python");
+        touch(second + "/python3");
+
+        const InterpreterLookup r = PythonLocator(QStringList{first, second}).locate({});
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        // python3 beats python, but only an executable python3: second/python3.
+        QCOMPARE(r.path, QFileInfo(second + "/python3").absoluteFilePath());
+    }
+#endif
 
     void overrideReturnsAbsolutePath() {
         QTemporaryDir dir;
@@ -98,7 +130,12 @@ private slots:
         const InterpreterLookup r = PythonLocator(QStringList{dir.path()}).locate({});
         QVERIFY(!r.ok());
         QVERIFY(r.error.contains("--python"));
+#ifdef Q_OS_WIN
         QVERIFY(r.error.contains("Microsoft Store"));
+#else
+        QVERIFY(r.error.contains("python3"));
+        QVERIFY(!r.error.contains("Microsoft Store"));
+#endif
     }
 };
 

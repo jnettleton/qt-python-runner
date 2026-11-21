@@ -20,14 +20,17 @@ public:
 
 // Resolves to an ABSOLUTE path (a bare name would go through CreateProcess
 // search order, which includes the app/current directory before PATH).
-//  - Auto-detect scans PATH directories for python.exe, python3.exe, py.exe
-//    via QStandardPaths::findExecutable, one directory at a time.
-//  - .bat/.cmd are never chosen: launching them routes arguments through
-//    cmd.exe parsing (quoting/injection risk). This deliberately skips the
-//    pyenv-win shims; use --python / the Interpreter field for those.
+//  - Auto-detect scans PATH directories via QStandardPaths::findExecutable,
+//    one directory at a time, for python.exe, python3.exe, py.exe (Windows) or
+//    python3, python (elsewhere; a file must carry the execute bit).
+//  - Windows only: .bat/.cmd are never chosen: launching them routes arguments
+//    through cmd.exe parsing (quoting/injection risk). This deliberately skips
+//    the pyenv-win shims; use --python / the Interpreter field for those.
+//    POSIX has no such rule: a pyenv/asdf shim is an ordinary executable script
+//    started with an argv list.
 //  - A hit under ...\WindowsApps\ may be the Microsoft Store stub; it is used
 //    only if nothing better exists, and the presenter explains a silent
-//    failure.
+//    failure. (Never matches on POSIX paths.)
 class PythonLocator final : public IInterpreterLocator {
 public:
     // Default: directories from the PATH environment variable.
