@@ -1,3 +1,21 @@
+# Default: normalize to LF in the repository; check out as LF everywhere.
+* text=auto eol=lf
+
+# Windows scripts must be CRLF in the working tree.
 *.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Unix scripts and Python fixtures stay LF.
 *.sh text eol=lf
 *.py text eol=lf
+
+# Binaries: never touch.
+*.png binary
+*.ico binary
+*.jpg binary
+*.gif binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.zip binary
