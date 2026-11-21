@@ -210,6 +210,11 @@ No `waitFor*` on any GUI path (tests call them only on a test thread).
   the locator's platform constants, the `ConsoleColor`/`ConsoleEncodingGuard` guards (already
   `#ifdef`'d), and two strings in `MainView`. Windows-only CMake: `enable_language(RC)`,
   VERSIONINFO, `windeployqt`, the Qt deploy script, `PATH` prepending in tests.
+- **File dialog under ASan (MSVC).** `msvc-asan` builds define `PYRUN_ASAN_BUILD` on `gui_view`,
+  and `MainView` then passes `QFileDialog::DontUseNativeDialog`. The native Win32 common dialog
+  loads uninstrumented Shell DLLs (e.g. `ntshrui.dll`) through COM into the ASan process, which
+  produced heap-buffer-overflow reports in Microsoft code, not ours. Debug and Release are
+  unaffected and use the native dialog; it is therefore not exercised under ASan.
 - **Install on Linux** is `bin/` plus an RPATH; no bundling (see README, Deploy).
 - **Line endings.** `.gitattributes` pins `*.sh` and `*.py` to LF (a CRLF shebang breaks) and
   `*.cmd` to CRLF.

@@ -50,7 +50,8 @@ From an x64 Native Tools / Developer prompt:
 
 Presets: `msvc-debug`, `msvc-release`, `msvc-asan` (AddressSanitizer on
 RelWithDebInfo; MSVC has no UBSan/TSan). Warnings are errors (`/W4 /WX`); turn
-off with `-DPYRUN_WARNINGS_AS_ERRORS=OFF`.
+off with `-DPYRUN_WARNINGS_AS_ERRORS=OFF`. `msvc-asan` builds the GUI with Qt's own
+(non-native) file dialog; Debug and Release keep the native one. See `docs/design.md`.
 
 From any shell (finds Visual Studio with vswhere and calls vcvars64 itself):
 

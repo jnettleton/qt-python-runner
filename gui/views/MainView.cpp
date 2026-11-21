@@ -160,11 +160,23 @@ void MainView::closeEvent(QCloseEvent* event) {
     QMainWindow::closeEvent(event);
 }
 
+namespace {
+// MSVC ASan builds only: the native Win32 file dialog drags uninstrumented
+// shell extensions (ntshrui.dll etc.) into the ASan process, which can raise
+// reports that are not ours. Use Qt's own dialog there. Other builds: native.
+constexpr QFileDialog::Options kDialogOptions =
+#ifdef PYRUN_ASAN_BUILD
+    QFileDialog::DontUseNativeDialog;
+#else
+    QFileDialog::Options{};
+#endif
+}  // namespace
+
 void MainView::browseForScript() {
     const QString start = QFileInfo(m_scriptEdit->text()).absolutePath();
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Select a Python script"), start,
-        tr("Python files (*.py);;All files (*)"));
+        tr("Python files (*.py);;All files (*)"), nullptr, kDialogOptions);
     if (!path.isEmpty()) {
         m_scriptEdit->setText(path);
     }
@@ -177,7 +189,8 @@ void MainView::browseForPython() {
     const QString filter = tr("All files (*)");  // no extension marks an executable
 #endif
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Select a Python interpreter"), m_pythonEdit->text(), filter);
+        this, tr("Select a Python interpreter"), m_pythonEdit->text(), filter, nullptr,
+        kDialogOptions);
     if (!path.isEmpty()) {
         m_pythonEdit->setText(path);
     }

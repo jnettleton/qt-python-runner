@@ -10,6 +10,10 @@ qt_add_library(gui_view STATIC
 target_link_libraries(gui_view PUBLIC runner_core Qt6::Widgets)
 target_include_directories(gui_view PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 pyrun_set_warnings(gui_view)
+if(PYRUN_ASAN AND MSVC)
+  # The native Win32 file dialog loads uninstrumented shell DLLs; see MainView.cpp.
+  target_compile_definitions(gui_view PRIVATE PYRUN_ASAN_BUILD)
+endif()
 
 # WIN32 is explicit: without it the GUI exe opens a console window.
 qt_add_executable(pyrun-gui WIN32 main.cpp)
