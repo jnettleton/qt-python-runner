@@ -1,0 +1,174 @@
+# Design note
+
+## Shape
+
+    gui/  pyrun-gui   Qt Widgets view  --\
+    cli/  pyrun       console view     ---+--> core/ runner_core (static lib, Qt6::Core only)
+    tests/            Qt Test under CTest
+
+Dependency rule, enforced by target links: `runner_core` links `Qt6::Core` and
+nothing else; `gui_view` adds `Qt6::Widgets`; `pyrun` (CLI) never links Widgets
+or Gui. A widget include in core fails to compile.
+
+## Source layout
+
+One class per header/source pair, files named after the class.
+
+    core/                      runner_core (Qt6::Core only)
+      models/                  RunResult, OutputChannel, StatusSeverity, FileList (value types, no behaviour tied to a UI)
+      services/                IProcessRunner, ProcessRunner, PythonLocator, OutputDecoder
+      presenters/              RunPresenter (depends on view interfaces only)
+      views/                   IRunView (the view interface; no widget types)
+    gui/                       pyrun-gui + gui_view (Qt6::Widgets)
+      views/                   MainView, AboutView, OutputFormats.h (the stderr colour)
+    cli/                       pyrun (Qt6::Core only)
+      views/                   ConsoleView (implements IRunView on stdout/stderr)
+      ConsoleColor.*           colour policy + VT console-mode RAII (not a view)
+      ConsoleEncodingGuard.*   console code page RAII (not a view)
+    tests/
+
+Includes are rooted at each target's directory (`"presenters/RunPresenter.h"`,
+`"views/MainView.h"`). View interfaces live in core so the presenter can
+name them; concrete views live in the target that owns their UI toolkit, so
+Widgets cannot leak into core.
+
+## Interfaces (MVP, passive view)
+
+- `IRunView` (core): `showOutput(text, OutputChannel)`, `showStatus(line, StatusSeverity)`, `showError`, `setRunning`,
+  `clearOutput`. No decisions. User intent flows back through signals on the
+  concrete view (`MainView::runRequested/stopRequested`), wired to the
+  presenter in `main.cpp`. The interface has no signals so the CLI view needs no QObject.
+- `IProcessRunner` (core): `start(RunRequest)`, `stop()`, signals
+  `outputReceived(QString, OutputChannel)` and `finished(RunResult)`. One `finished` per
+  `start`, including `FailedToStart`. `ProcessRunner` is the QProcess
+  implementation; tests use a fake.
+- `IInterpreterLocator` (core): `locate(override)` returns a path or an
+  actionable error. `PythonLocator` is the real one.
+- `RunPresenter` (core): the only presenter. A GUI run is a batch of one.
+  Owns validation, sequencing, the continue/fail-fast policy, messages, the
+  Store-stub hint, and the exit-code mapping (`BatchSummary::exitCode`).
+
+## Who's the parent?
+
+| Resource | Owner | Killed by | Told of death via |
+|----------|-------|-----------|-------------------|
+| `ProcessRunner` | `main()` stack | n/a | n/a |
+| per-run `QProcess` | `ProcessRunner` (QObject parent), `deleteLater` on completion | `stop()`, timeout timer, or `~ProcessRunner` as last resort | `finished(RunResult)` |
+| timeout `QTimer` | `ProcessRunner` (member, parent `this`) | stopped in `complete()` | n/a |
+| `RunPresenter` | `main()` stack; holds non-owning refs to view/runner/locator | n/a | `batchFinished` |
+| GUI child widgets | `MainView` via Qt parent tree | n/a | n/a |
+| `AboutView` | stack, modal, parent `MainView` | n/a | n/a |
+| per-run `ProcessJob` (Win32 Job Object, KILL_ON_JOB_CLOSE) | `ProcessRunner` (`unique_ptr`) | `stop()`/timeout via `TerminateJobObject`; closing the handle on run completion or runner death | n/a |
+| grandchildren spawned by a script | the job | same as above | not reported individually |
+| GUI interpreter setting | `QSettings` (INI) on `main()`'s stack | n/a | n/a |
+
+Tree kill: each run gets a Job Object (`#ifdef Q_OS_WIN` inside `ProcessRunner.cpp`;
+no-op elsewhere). The interpreter is assigned on `QProcess::started`. Stop and timeout call
+`TerminateJobObject` then `kill()`. The job is closed when the run completes, so leftover
+descendants die with it: a script cannot daemonise a child past its run (this also covers
+`py.exe`, which launches `python.exe` as a child). Known race: a descendant spawned
+between process creation and job assignment escapes; interpreter start-up makes this
+practically unreachable. If assignment fails, behaviour falls back to killing the direct child.
+
+## Channels and encoding
+
+- `QProcess::SeparateChannels` (changed from `MergedChannels` when nett asked for
+  stderr highlighting). With one merged pipe the origin of a byte is gone at the
+  OS level, so colouring is impossible after the fact. Each chunk is now tagged
+  `OutputChannel::StdOut` or `StdErr` from `ProcessRunner` through the presenter
+  to the view.
+- **Ordering guarantee, stated plainly.** Within a channel, order is exact. Across
+  the two channels it is *not*: stdout and stderr are two independent pipes, so
+  there is no timestamp or sequence number to recover the interleaving. We drain
+  best effort: a `readyRead` on either pipe schedules one drain through the
+  event loop (a zero-delay single shot, no waiting), so the other pipe's reader
+  can complete first; the drain then takes everything pending, stdout before
+  stderr. This was measured, not assumed: reading the moment stderr signalled
+  put a script's stderr line ahead of the stdout lines it wrote first, every
+  run; the hop plus the stdout-first tie-break fixed `samples/hellopython.py`.
+  The residual error: when both pipes hold data at once, all stdout precedes all
+  stderr, so a script that alternates rapidly (`interleave.py`: out1 err1 out2
+  err2 ...) comes out grouped (out1 out2 out3 err1 err2 err3), and
+  stderr-then-stdout output that arrived together is reversed. Tests assert the per-channel streams only, never the
+  cross-channel interleaving. The only way
+  to get true order back is to merge again (losing the colour).
+- One `OutputDecoder` per channel, each reset at run start and flushed at run
+  end. A UTF-8 sequence or CRLF split across reads on one pipe cannot be
+  disturbed by bytes on the other.
+- The presenter's own repair newline (`ensureLineStart`) is tagged stdout, so it
+  never carries stderr colour.
+- Child gets `PYTHONUTF8=1`, `PYTHONUNBUFFERED=1` and `-u`; env starts from
+  the system environment with those overrides; working directory is the
+  script's directory; stdin is closed (script sees EOF).
+- Decoding: `OutputDecoder` wraps a stateful UTF-8 `QStringDecoder`, one per
+  run, so a multi-byte sequence split across reads survives. CRLF is
+  normalised to LF with a held trailing CR so a split CRLF is not doubled.
+  `fromLocal8Bit` is not used anywhere.
+- PEP 686 (UTF-8 mode default in 3.15) not re-checked from the PEP page; the
+  explicit env var covers older and newer Pythons either way.
+- **stderr colour, GUI.** `MainView` inserts each chunk with an explicit
+  `QTextCharFormat` from `gui/views/OutputFormats.h`. stdout uses the default
+  format (palette-driven). stderr uses `kStderrColor`, a single hue constant;
+  lightness is pinned from the output pane's palette (0.36 on a light base, 0.68
+  on a dark base), so any hue stays readable. Yellow is a one-line change to
+  `kStderrColor`.
+- **stderr colour, CLI.** Script stderr text is still written to **stdout**
+  (script output stays on stdout), wrapped in `ESC[91m ... ESC[0m` per chunk,
+  only if stdout is an interactive console with VT processing. `ConsoleColorGuard`
+  enables VT on a console that lacks it and restores the previous console mode at
+  exit; redirected streams are never touched. Off when `--no-color` is given or
+  `NO_COLOR` is set non-empty (no-color.org).
+- **Failure status lines.** `IRunView::showStatus(line, StatusSeverity)` carries
+  `Info` (run headers, `Summary:`), `Success` (`[ok]`, a clean totals line) or
+  `Failure`. The presenter decides (`RunPresenter::severityOf`): anything other
+  than a clean exit 0 is a failure, i.e. non-zero exit, crash, failed to start,
+  `[stopped]`, `[timeout]`; the per-script `FAILED` summary rows; and the totals
+  line when anything failed or was not run. `showError` (no interpreter, no
+  scripts) is always a failure. Views never read the text.
+  - GUI: failures use `stderrTextColor`, i.e. the same `kStderrColor` (no second
+    constant), in the output pane and in the status bar (via its palette).
+  - CLI: status lines go to stderr, so colour is decided per stream:
+    `ConsoleColorGuard::stderrColor()` (stderr is an interactive VT console, not
+    `NO_COLOR`/`--no-color`). Failure lines and errors are wrapped in
+    `ESC[91m ... ESC[0m`; `[ok]` and info lines stay plain. stdout and stderr
+    colour are independent: `pyrun a.py > out.txt` leaves the failure lines red
+    on the console, while `2> err.txt` makes them plain.
+  - No green for `[ok]`: not conventional for tools that print status, and an
+    extra colour to keep legible on both themes for no information gain.
+- CLI output: stdout/stderr put in binary mode, console code page switched to
+  UTF-8 for the run and restored on exit; we write UTF-8 bytes, so a console and a
+  redirect to a file produce the same bytes.
+
+## Interpreter resolution
+
+Absolute path always. Auto-detect scans PATH directories one at a time with
+`QStandardPaths::findExecutable` for `python.exe`, `python3.exe`, `py.exe`.
+`.bat`/`.cmd` are never chosen (cmd.exe argument parsing); when only a batch shim is found, the error names it and tells pyenv-win users to use `pyenv which python`. A hit under
+`WindowsApps` is used only as a last resort; if the run then exits at once
+with no output, the presenter says it is probably the Microsoft Store stub and
+what to do. Override: `--python` / the GUI Interpreter field.
+
+## Timeout policy
+
+None by default. GUI: Stop button (and closing the window) kills the script.
+CLI: `--timeout <seconds>` applies per script; at expiry the child is killed
+and reported `[timeout]`; the batch then continues (or stops with `--fail-fast`).
+`kill()` rather than `terminate()` because a console Python ignores WM_CLOSE.
+
+## Exit-code policy (CLI)
+
+`0` all scripts succeeded. `1` any script failed or was not run. `2` usage
+error, unreadable file list, or nothing could run. Default is continue past
+failures with a summary; `--fail-fast` stops at the first failure.
+
+## Threads
+
+None. QProcess is asynchronous; the CLI is event driven (the next script is
+chained off `finished`, `batchFinished` quits the loop with the exit code).
+No `waitFor*` on any GUI path (tests call them only on a test thread).
+
+## Not done / deliberate omissions
+
+- Remembering the last script (only the interpreter is remembered, by decision).
+- No icon (by decision). VERSIONINFO is generated from project VERSION for both exes.
+- No stdin forwarding to the script.

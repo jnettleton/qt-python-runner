@@ -1,0 +1,47 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.12.1/msvc2022_64",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "msvc-debug",
+      "inherits": "base",
+      "displayName": "MSVC 2022 x64 Debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "msvc-release",
+      "inherits": "base",
+      "displayName": "MSVC 2022 x64 Release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "msvc-asan",
+      "inherits": "base",
+      "displayName": "MSVC 2022 x64 AddressSanitizer (RelWithDebInfo, no /RTC)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "PYRUN_ASAN": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc-debug", "configurePreset": "msvc-debug" },
+    { "name": "msvc-release", "configurePreset": "msvc-release" },
+    { "name": "msvc-asan", "configurePreset": "msvc-asan" }
+  ],
+  "testPresets": [
+    { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
+    { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
+    { "name": "msvc-asan", "configurePreset": "msvc-asan", "output": { "outputOnFailure": true } }
+  ]
+}

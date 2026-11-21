@@ -1,0 +1,11 @@
+Checks: >
+  -*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape
+HeaderFilterRegex: '(core|cli|gui)/.*'
+WarningsAsErrors: ''
